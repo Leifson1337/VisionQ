@@ -9,7 +9,9 @@ VisionQ is a low-level attention compute engine designed as a hardware-aware rep
 - **Geometric 3D Awareness**: Native support for video and image data without forced flattening, preserving spatial and temporal locality.
 - **IO-Aware Kernel Abstraction**: A unified execution layer for CUDA, Triton, and CPU-fallback kernels.
 - **Efficient Sliding Windows**: Neighborhood attention implemented via `unfold` to maintain constant memory overhead regardless of spatial resolution.
-- **Intelligent Dispatching**: Dynamically routes execution to optimal kernels (Flash, Neighborhood, Block-Sparse, Streaming) based on sequence context.
+- **Policy-Driven Execution Planning**: Uses a learned `KernelRouter` and `PolicyModel` to dynamically decide the best attention algorithm, block structure, and sparsity strategy in real-time.
+- **Hardware-Aware Autotuning**: Automatically tunes parameters like `block_size` and `window_size` based on GPU compute capability and VRAM pressure.
+- **Intelligent Dispatching**: Dynamically routes execution to optimal kernels (Flash, Neighborhood, Block-Sparse, Streaming) based on input modality and sequence complexity.
 
 ## Core Components
 
