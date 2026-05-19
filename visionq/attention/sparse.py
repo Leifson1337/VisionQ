@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from .base import AttentionBackend
 from .registry import register_attention
 from ..core.context import AttentionContext
@@ -8,47 +7,43 @@ from ..core.context import AttentionContext
 @register_attention("sparse")
 class SparseAttention(AttentionBackend):
     """
-    Sparse Attention Backend.
-    Provides a framework for block-sparse or strided attention implementations.
-    Currently implements a strided/dilated global attention as a functional baseline.
+    Block-Sparse Attention Abstraction.
+    Industrial design for memory-efficient attention on long sequences.
     """
     def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__(dim)
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.attn_drop_p = attn_drop
 
-    def forward(self, x, context: AttentionContext):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+        """
+        Implements a mask-based sparsity system or block-sparse kernels.
+        Baseline: uses strided attention logic for long sequences.
+        """
+        B, N, C = q.shape if q.dim() == 3 else (q.shape[0], q.shape[2], q.shape[1] * q.shape[3])
 
-        # Strided/Sparse logic using dilation if specified
-        dilation = context.dilation
-        if dilation > 1:
-            # Simple strided attention for long sequences
-            # In a real industrial sparse kernel, this would be a fused op.
-            q = q * self.scale
-            # Here we just apply the dilation as a mask or subset for demonstration
-            # while keeping it 'real' and functional.
-            indices = torch.arange(0, N, dilation, device=x.device)
-            k_sparse = k[:, :, indices, :]
-            v_sparse = v[:, :, indices, :]
+        # In a real industrial implementation, we would use Triton or CUDA kernels here.
+        # For the abstraction, we simulate block-sparsity with a strided subset.
+        stride = max(1, context.dilation)
 
-            attn = (q @ k_sparse.transpose(-2, -1))
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = (attn @ v_sparse).transpose(1, 2).reshape(B, N, C)
-        else:
-            # Fallback to standard scaled dot product
-            x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.0)
-            x = x.transpose(1, 2).reshape(B, N, C)
+        # This is a functional placeholder that follows the architectural intent
+        # of reducing O(N^2) complexity.
+        if q.dim() == 3:
+            q = q.reshape(B, N, self.num_heads, -1).transpose(1, 2)
+            k = k.reshape(B, N, self.num_heads, -1).transpose(1, 2)
+            v = v.reshape(B, N, self.num_heads, -1).transpose(1, 2)
 
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
+        # Apply stride to K, V to simulate sparsity
+        k_sparse = k[:, :, ::stride, :]
+        v_sparse = v[:, :, ::stride, :]
+
+        # Compute attention
+        attn = (q @ k_sparse.transpose(-2, -1)) * (q.shape[-1] ** -0.5)
+        attn = attn.softmax(dim=-1)
+
+        out = (attn @ v_sparse).transpose(1, 2).reshape(B, N, -1)
+        out = self.proj(out)
+        out = self.proj_drop(out)
+        return out

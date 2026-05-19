@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
 from ..core.context import AttentionContext
@@ -11,12 +12,14 @@ class AttentionBackend(nn.Module, ABC):
         self.dim = dim
 
     @abstractmethod
-    def forward(self, x, context: AttentionContext):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
         """
         Computes attention.
 
         Args:
-            x: Input tensor (B, N, C)
+            q: Query tensor (B, H, N, D) or (B, N, C)
+            k: Key tensor
+            v: Value tensor
             context: AttentionContext containing metadata
         """
         pass

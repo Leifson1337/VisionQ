@@ -16,7 +16,11 @@ def register_attention(name: str):
 def get_attention_backend(name: str):
     """
     Retrieves an attention backend class from the registry.
+    Ensures all backends are registered by importing the attention package.
     """
+    if not ATTENTION_REGISTRY:
+        from .. import attention
+
     if name not in ATTENTION_REGISTRY:
         raise KeyError(f"Attention backend '{name}' not found in registry. "
                         f"Available: {list(ATTENTION_REGISTRY.keys())}")
