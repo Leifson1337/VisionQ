@@ -2,6 +2,9 @@ from ..attention.registry import ATTENTION_REGISTRY
 from ..core.context import AttentionContext
 from ..kernels.triton.attention_kernel import TritonAttentionKernel
 from .kernel_router import KernelRouter
+from ..compiler.graph_ir.ir import AttentionGraph, QKVProjectionNode, MatMulNode, SoftmaxNode
+from ..compiler.optimizer.optimizer import GraphOptimizer
+from ..compiler.fusion_engine.fusion import FusionEngine
 from typing import Type, Optional, Dict, Any
 
 class AttentionDispatcher:
@@ -14,17 +17,35 @@ class AttentionDispatcher:
         self.triton_kernel = TritonAttentionKernel()
         self.router = KernelRouter()
 
+    def compile_graph(self, qkv_params: Dict[str, Any]) -> AttentionGraph:
+        """
+        Translates a request into a compiled attention plan.
+        """
+        graph = AttentionGraph()
+        # 1. Capture IR
+        graph.add_node(QKVProjectionNode(id="qkv", dim=qkv_params["dim"]))
+        graph.add_node(MatMulNode(id="attn_scores", transpose_b=True))
+        graph.add_node(SoftmaxNode(id="softmax"))
+
+        # 2. Optimize
+        graph = GraphOptimizer(graph).optimize()
+
+        # 3. Fuse
+        graph = FusionEngine(graph).fuse()
+
+        return graph
+
     def plan(self, context: AttentionContext) -> str:
         """
-        Plans the execution using the KernelRouter.
+        Plans the execution using the KernelRouter and Compiler insights.
         Returns the best backend name.
         """
-        selection, autotuned_params = self.router.plan_execution(context)
+        # Integrate Compiler insights here in the future
+        graph = self.compile_graph({"dim": 128})
 
-        # Merge autotuned parameters into context for backends to consume
+        selection, autotuned_params = self.router.plan_execution(context)
         context.extra_args.update(autotuned_params)
 
-        # Ensure selection exists in registry, otherwise fallback
         if selection not in ATTENTION_REGISTRY:
              selection = "flash" if "flash" in ATTENTION_REGISTRY else list(ATTENTION_REGISTRY.keys())[0]
 
