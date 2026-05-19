@@ -1,6 +1,7 @@
 from ..attention.registry import ATTENTION_REGISTRY
 from ..core.context import AttentionContext
-from typing import Type
+from ..kernels.triton.attention_kernel import TritonAttentionKernel
+from typing import Type, Optional
 
 class AttentionDispatcher:
     """
@@ -9,9 +10,13 @@ class AttentionDispatcher:
     """
     _selection_cache = {}
 
+    def __init__(self):
+        self.triton_kernel = TritonAttentionKernel()
+
     def select(self, context: AttentionContext) -> str:
         cache_key = (
             context.modality,
+            context.sequence_length,
             context.spatial_window,
             context.temporal_window,
             context.dilation,
@@ -50,3 +55,14 @@ class AttentionDispatcher:
 
         self._selection_cache[cache_key] = selection
         return selection
+
+    def dispatch_kernel(self, q, k, v, context):
+        """Low-level kernel dispatch path."""
+        if context.device.type == "cuda":
+             # Use the industrial block-based kernel
+             return self.triton_kernel.forward(q, k, v, context)
+
+        # Fallback to standard SDPA for CPU
+        from ..attention.flash import FlashAttention
+        fallback = FlashAttention(q.shape[-1])
+        return fallback(q, k, v, context)

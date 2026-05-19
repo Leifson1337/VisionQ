@@ -4,9 +4,11 @@ VisionQ is a low-level attention compute engine designed as a hardware-aware rep
 
 ## Key Architectural Principles
 
-- **Memory-Limited Optimization**: Designed to minimize global memory reads/writes using tiling and block-based processing.
+- **Memory-Limited Optimization**: Optimized for GPU memory hierarchy (HBM/SRAM), minimizing global memory bandwidth via tiling and block-based streaming.
+- **Online Softmax Integration**: Implements the FlashAttention principle of streaming normalization for numerically stable, constant-memory attention computation.
 - **Geometric 3D Awareness**: Native support for video and image data without forced flattening, preserving spatial and temporal locality.
-- **IO-Aware Kernel Abstraction**: A unified interface for CUDA, Triton, and CPU-fallback kernels.
+- **IO-Aware Kernel Abstraction**: A unified execution layer for CUDA, Triton, and CPU-fallback kernels.
+- **Efficient Sliding Windows**: Neighborhood attention implemented via `unfold` to maintain constant memory overhead regardless of spatial resolution.
 - **Intelligent Dispatching**: Dynamically routes execution to optimal kernels (Flash, Neighborhood, Block-Sparse, Streaming) based on sequence context.
 
 ## Core Components

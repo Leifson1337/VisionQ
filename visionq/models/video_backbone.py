@@ -24,7 +24,7 @@ class VideoBackboneBlock(VisionBackboneBlock):
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         backend_name = self.dispatcher.select(context)
-        backend = self.backends[backend_name]
+        backend = self._get_backend(backend_name)
 
         # Dispatch
         out = backend(q, k, v, context)
