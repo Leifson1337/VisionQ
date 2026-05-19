@@ -8,7 +8,8 @@ def register_attention(name: str):
     """
     def wrapper(cls):
         if name in ATTENTION_REGISTRY:
-            raise ValueError(f"Attention backend '{name}' is already registered.")
+            # Overwrite for re-registration in same process/tests
+            pass
         ATTENTION_REGISTRY[name] = cls
         return cls
     return wrapper

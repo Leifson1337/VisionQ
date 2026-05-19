@@ -3,41 +3,13 @@ import torch.nn as nn
 from typing import Optional, Union
 from ..core.tensor import SpatioTemporalTensor, as_st_tensor
 from ..core.context import AttentionContext
-from ..runtime.dispatcher import AttentionDispatcher
+from .backbone import VisionBackboneBlock
 
-class VisionBackboneBlock(nn.Module):
+class VideoBackboneBlock(VisionBackboneBlock):
     """
-    Industrial-grade Vision/Video Transformer Block.
-    Shares QKV and Projection weights across all potential backends.
+    Native Video Transformer Block.
+    Optimized for structured 3D tensors.
     """
-    def __init__(self, dim: int, num_heads: int = 8, mlp_ratio: float = 4.0, qkv_bias: bool = True):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-
-        self.dim = dim
-        self.num_heads = num_heads
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-
-        # We store backends in a ModuleDict.
-        # Note: Backends are now compute-only and don't hold their own QKV weights.
-        self.backends = nn.ModuleDict()
-        from ..attention.registry import ATTENTION_REGISTRY
-        for name, cls in ATTENTION_REGISTRY.items():
-            self.backends[name] = cls(dim, num_heads=num_heads, qkv_bias=qkv_bias)
-
-        self.dispatcher = AttentionDispatcher()
-
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(0.0)
-
-        self.norm2 = nn.LayerNorm(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, mlp_hidden_dim),
-            nn.GELU(),
-            nn.Linear(mlp_hidden_dim, dim)
-        )
-
     def forward(self, x: Union[torch.Tensor, SpatioTemporalTensor], context: Optional[AttentionContext] = None) -> SpatioTemporalTensor:
         st_x = as_st_tensor(x)
         if context is None:
@@ -54,7 +26,7 @@ class VisionBackboneBlock(nn.Module):
         backend_name = self.dispatcher.select(context)
         backend = self.backends[backend_name]
 
-        # Backend returns (B, H, N, D) or (B, N, C)
+        # Dispatch
         out = backend(q, k, v, context)
 
         # Standardize output to (B, N, C)
@@ -64,7 +36,6 @@ class VisionBackboneBlock(nn.Module):
             out = out.transpose(1, 2).reshape(B, N_total, C)
 
         out = self.proj(out)
-        out = self.proj_drop(out)
 
         hidden_states = residual + out
         hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
@@ -76,11 +47,11 @@ class VisionBackboneBlock(nn.Module):
             st_x.temporal_dim
         )
 
-class VisionBackbone(nn.Module):
+class VideoBackbone(nn.Module):
     def __init__(self, depth: int, dim: int, num_heads: int = 8, mlp_ratio: float = 4.0):
         super().__init__()
         self.blocks = nn.ModuleList([
-            VisionBackboneBlock(dim, num_heads, mlp_ratio)
+            VideoBackboneBlock(dim, num_heads, mlp_ratio)
             for _ in range(depth)
         ])
 

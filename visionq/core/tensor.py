@@ -1,17 +1,8 @@
 import torch
 from typing import Optional, Tuple, Union, Any
-from .types import ModalityType, ShapeType
+from .types import ModalityType
 
-class STTensor:
-    """
-    Spatio-Temporal Tensor Abstraction.
-    Unified representation for Image, Video, and Sequence data.
-
-    Shapes:
-    - Image:  (B, H*W, C) or (B, C, H, W)
-    - Video:  (B, T*H*W, C) or (B, C, T, H, W)
-    - Sequence: (B, L, C)
-    """
+class SpatioTemporalTensor:
     def __init__(
         self,
         x: torch.Tensor,
@@ -20,61 +11,60 @@ class STTensor:
         temporal_dim: Optional[int] = None
     ):
         if not isinstance(x, torch.Tensor):
-            raise TypeError(f"STTensor expects torch.Tensor, got {type(x)}")
+            raise TypeError(f"Expected torch.Tensor, got {type(x)}")
 
-        self._x = x
+        if x.dim() == 5:
+            self._x = x
+        elif x.dim() == 4:
+            self._x = x.unsqueeze(1)
+        elif x.dim() == 3:
+            if spatial_shape and temporal_dim:
+                self._x = x.reshape(x.shape[0], temporal_dim, *spatial_shape, x.shape[-1])
+            elif spatial_shape:
+                self._x = x.reshape(x.shape[0], 1, *spatial_shape, x.shape[-1])
+            else:
+                self._x = x.reshape(x.shape[0], x.shape[1], 1, 1, x.shape[-1])
+        else:
+            raise ValueError(f"Unsupported dimension: {x.dim()}")
+
         self._modality = modality
-        self._spatial_shape = spatial_shape
-        self._temporal_dim = temporal_dim
 
     @property
-    def x(self) -> torch.Tensor:
-        return self._x
-
+    def x(self) -> torch.Tensor: return self._x
     @property
-    def modality(self) -> ModalityType:
-        return self._modality
-
+    def modality(self) -> ModalityType: return self._modality
     @property
-    def spatial_shape(self) -> Optional[Tuple[int, int]]:
-        return self._spatial_shape
-
+    def shape(self): return self._x.shape
     @property
-    def temporal_dim(self) -> Optional[int]:
-        return self._temporal_dim
-
+    def B(self): return self._x.shape[0]
     @property
-    def shape(self):
-        return self._x.shape
-
+    def T(self): return self._x.shape[1]
     @property
-    def device(self):
-        return self._x.device
-
+    def H(self): return self._x.shape[2]
     @property
-    def dtype(self):
-        return self._x.dtype
+    def W(self): return self._x.shape[3]
+    @property
+    def C(self): return self._x.shape[4]
+    @property
+    def dtype(self): return self._x.dtype
+    @property
+    def device(self): return self._x.device
+    @property
+    def spatial_shape(self) -> Tuple[int, int]: return (self.H, self.W)
+    @property
+    def temporal_dim(self) -> int: return self.T
 
-    def to(self, *args, **kwargs) -> 'STTensor':
-        return STTensor(self._x.to(*args, **kwargs), self._modality, self._spatial_shape, self._temporal_dim)
+    def flatten_all(self) -> torch.Tensor:
+        return self._x.reshape(self.B, self.T * self.H * self.W, self.C)
 
-    def unwrap(self) -> torch.Tensor:
-        return self._x
+    def unwrap(self) -> torch.Tensor: return self._x
+
+    def to(self, *args, **kwargs) -> 'SpatioTemporalTensor':
+        return SpatioTemporalTensor(self._x.to(*args, **kwargs), self._modality)
 
     def __repr__(self):
-        return (f"STTensor(modality={self._modality}, shape={list(self.shape)}, "
-                f"spatial={self._spatial_shape}, temporal={self._temporal_dim})")
+        return f"STTensor(modality={self._modality}, shape={list(self.shape)})"
 
-def as_st_tensor(x: Any, modality: Optional[ModalityType] = None, **kwargs) -> STTensor:
-    if isinstance(x, STTensor):
-        if modality is not None:
-            # Update modality if provided
-            return STTensor(x.unwrap(), modality, x.spatial_shape, x.temporal_dim)
-        return x
-
-    if modality is None:
-        # Fallback for depth > 1 where we might receive a raw tensor
-        # This is a safety net; ideally blocks should return STTensors
-        modality = "image"
-
-    return STTensor(x, modality, **kwargs)
+def as_st_tensor(x: Any, **kwargs) -> SpatioTemporalTensor:
+    if isinstance(x, SpatioTemporalTensor): return x
+    return SpatioTemporalTensor(x, **kwargs)

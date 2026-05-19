@@ -44,6 +44,4 @@ class SparseAttention(AttentionBackend):
         attn = attn.softmax(dim=-1)
 
         out = (attn @ v_sparse).transpose(1, 2).reshape(B, N, -1)
-        out = self.proj(out)
-        out = self.proj_drop(out)
         return out

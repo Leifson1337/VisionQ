@@ -3,6 +3,9 @@ from .registry import register_attention, get_attention_backend
 from .neighborhood import NeighborhoodAttention
 from .flash import FlashAttention
 from .sparse import SparseAttention
+from .spatial import SpatialNeighborhoodAttention
+from .temporal import TemporalNeighborhoodAttention
+from .spatiotemporal import SpatioTemporalHybridAttention
 
 __all__ = [
     "AttentionBackend",
@@ -10,5 +13,8 @@ __all__ = [
     "get_attention_backend",
     "NeighborhoodAttention",
     "FlashAttention",
-    "SparseAttention"
+    "SparseAttention",
+    "SpatialNeighborhoodAttention",
+    "TemporalNeighborhoodAttention",
+    "SpatioTemporalHybridAttention"
 ]
