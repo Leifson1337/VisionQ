@@ -1,56 +1,56 @@
-from typing import Dict, Any, Tuple
-from .feature_extractor import FeatureExtractor
-from .policy_model import PolicyModel
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
 from ..core.context import AttentionContext
+from .feature_extractor import FeatureExtractor
+from .policy_model import HeuristicPolicy
 
-class KernelRouter:
-    """
-    Policy-driven Execution Planner for GPU Attention.
-    Decides algorithm, block structure, and sparsity strategy.
-    """
 
-    def __init__(self):
-        self.feature_extractor = FeatureExtractor()
-        self.policy_model = PolicyModel()
+@dataclass(frozen=True, slots=True)
+class RoutingDecision:
+    policy_version: str
+    backend: str
+    scores: dict[str, float]
+    parameters: dict[str, Any]
+    reason: str
 
-    def plan_execution(self, context: AttentionContext) -> Tuple[str, Dict[str, Any]]:
-        """
-        Plans the attention execution.
-        Returns: (kernel_name, autotuned_parameters)
-        """
-        features = self.feature_extractor.extract(context)
-        scores = self.policy_model.score_kernels(features)
-
-        kernel_name = self.policy_model.get_best_kernel(scores)
-
-        # Kernel Parameter Autotuning
-        params = self.autotune(kernel_name, features)
-
-        return kernel_name, params
-
-    def autotune(self, kernel_name: str, features: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Adaptively determines optimal block sizes and windows.
-        """
-        N = features["sequence_length"]
-
-        # Defaults
-        params = {
-            "block_size": 32,
-            "window_size": 7,
-            "stride": 1
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "backend": self.backend,
+            "scores": dict(self.scores),
+            "parameters": dict(self.parameters),
+            "reason": self.reason,
         }
 
-        # Adaptive Tiling based on sequence length
-        if N > 8192:
-            params["block_size"] = 128
-        elif N > 2048:
-            params["block_size"] = 64
 
-        # Hardware specific tuning
-        if features["device_type"] == "cuda":
-            capability = features["compute_capability"]
-            if capability[0] >= 8: # Ampere+
-                params["block_size"] = 128 # Larger shared memory
+class KernelRouter:
+    """Deterministic execution planner based on documented heuristics."""
 
-        return params
+    def __init__(self) -> None:
+        self.feature_extractor = FeatureExtractor()
+        self.policy = HeuristicPolicy()
+
+    def plan_execution(self, context: AttentionContext) -> RoutingDecision:
+        features = self.feature_extractor.extract(context)
+        scores = self.policy.score_backends(features)
+        backend = self.policy.get_best_backend(scores)
+        params = self.parameters_for(backend, features)
+        reason = f"selected {backend} with score {scores[backend]:.1f}"
+        return RoutingDecision(
+            policy_version=self.policy.version,
+            backend=backend,
+            scores=scores,
+            parameters=params,
+            reason=reason,
+        )
+
+    @staticmethod
+    def parameters_for(backend: str, features: dict[str, Any]) -> dict[str, Any]:
+        n = int(features["sequence_length"])
+        block_size = 128 if n > 8192 else 64 if n > 2048 else 32
+        if features["device_type"] == "cuda" and features["compute_capability"][0] >= 8:
+            block_size = max(block_size, 128)
+        return {"block_size": block_size, "window_size": 3, "stride": 1}

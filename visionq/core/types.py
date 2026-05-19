@@ -1,10 +1,11 @@
-from typing import Union, Tuple, Optional, Literal, Dict, Any
+from typing import Literal
+
 import torch
 
 ModalityType = Literal["image", "video", "sequence"]
-DeviceType = Union[str, torch.device]
+DeviceType = str | torch.device
 DtypeType = torch.dtype
 
-SpatialShape = Tuple[int, int]  # (H, W)
-SpatioTemporalShape = Tuple[int, int, int]  # (T, H, W)
-ShapeType = Union[SpatialShape, SpatioTemporalShape]
+SpatialShape = tuple[int, int]
+SpatioTemporalShape = tuple[int, int, int]
+ShapeType = SpatialShape | SpatioTemporalShape

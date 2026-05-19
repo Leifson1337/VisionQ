@@ -1,22 +1,31 @@
-import torch
-import torch.nn as nn
-from .base import AttentionBackend
-from .registry import register_attention, get_attention_backend
-from ..core.context import AttentionContext
-from typing import Optional
+from __future__ import annotations
 
-@register_attention("spatiotemporal_hybrid")
+from typing import Any, cast
+
+import torch
+
+from ..core.context import AttentionContext
+from .base import AttentionBackend
+from .registry import AttentionBackendName, get_attention_backend, register_attention
+
+
+@register_attention(AttentionBackendName.SPATIOTEMPORAL_HYBRID)
 class SpatioTemporalHybridAttention(AttentionBackend):
-    """
-    Hybrid factorized spatio-temporal attention.
-    Sequential (Spatial -> Temporal).
-    Fixes double scaling by using components as functional ops.
-    """
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
-        super().__init__(dim)
-        # Components
-        self.spatial_op = get_attention_backend("spatial_neighborhood")(dim, num_heads, qkv_bias, attn_drop, proj_drop)
-        self.temporal_op = get_attention_backend("temporal_neighborhood")(dim, num_heads, qkv_bias, attn_drop, proj_drop)
+    """Factorized spatial attention followed by temporal attention."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        super().__init__(dim, num_heads=num_heads, attn_drop=attn_drop)
+        spatial_cls = cast(Any, get_attention_backend(AttentionBackendName.SPATIAL_NEIGHBORHOOD))
+        temporal_cls = cast(Any, get_attention_backend(AttentionBackendName.TEMPORAL_NEIGHBORHOOD))
+        self.spatial_op = spatial_cls(dim, num_heads, qkv_bias, attn_drop, proj_drop)
+        self.temporal_op = temporal_cls(dim, num_heads, qkv_bias, attn_drop, proj_drop)
 
     def forward(
         self,
@@ -25,33 +34,23 @@ class SpatioTemporalHybridAttention(AttentionBackend):
         v: torch.Tensor,
         context: AttentionContext,
         block_size: int = 32,
-        mask: Optional[torch.Tensor] = None
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # Spatial step (Scaling happens inside component)
-        # q, k, v are (B, H_heads, N_total, D)
-        out = self.spatial_op(q, k, v, context)
-
-        # Temporal step (Disable scaling if it was already applied, but in our design
-        # backends are unified. To avoid double scaling, we pass scale=1.0 or
-        # ensure the second step is purely relational.)
-
-        # Factorized attention usually does: Spatial(Q,K,V) -> Temporal(Out, Out, Out)
-        # Here we need to be careful with the scale in the second op.
-        # Temporary workaround: use out/scale before passing if temporal_op scales again.
-        # BETTER: components should accept a scale parameter.
-
-        # (B, H, N_total, D) -> (B, T, H, N, D)
-        B, H, N_total, D = q.shape
-        T = context.temporal_dim or 1
-        N = N_total // T
-        out_5d = out.transpose(1, 2).reshape(B, T, N, H, D).transpose(2, 3)
-
-        # For the second step in factorized attention, we often don't want another scale
-        # if the first step already normalized the energy.
-        # But standard factorized ViTs still use scale in both.
-        # We follow standard practice but ensure consistency.
-        out = self.temporal_op(out_5d, out_5d, out_5d, context)
-
-        # Back to (B, H, N_total, D)
-        out = out.transpose(2, 3).reshape(B, N_total, H, D).transpose(1, 2)
-        return out
+        if mask is not None:
+            raise ValueError("SpatioTemporalHybridAttention does not support attn_mask")
+        self.validate_qkv(q, k, v)
+        if context.temporal_dim is None or context.spatial_shape is None:
+            raise ValueError("temporal_dim and spatial_shape are required for hybrid attention")
+        b, heads, total_tokens, dim = q.shape
+        t = context.temporal_dim
+        spatial_tokens = context.spatial_shape[0] * context.spatial_shape[1]
+        if total_tokens != t * spatial_tokens:
+            raise ValueError(
+                f"expected {t * spatial_tokens} tokens from context, got {total_tokens}"
+            )
+        q5 = q.reshape(b, heads, t, spatial_tokens, dim).permute(0, 2, 1, 3, 4)
+        k5 = k.reshape(b, heads, t, spatial_tokens, dim).permute(0, 2, 1, 3, 4)
+        v5 = v.reshape(b, heads, t, spatial_tokens, dim).permute(0, 2, 1, 3, 4)
+        spatial = self.spatial_op(q5, k5, v5, context, block_size=block_size)
+        temporal = self.temporal_op(spatial, spatial, spatial, context, block_size=block_size)
+        return temporal.permute(0, 2, 1, 3, 4).reshape(b, heads, total_tokens, dim)

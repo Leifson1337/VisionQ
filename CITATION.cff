@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: VisionQ
+message: "If you use VisionQ in research, cite the repository release you used."
+type: software
+authors:
+  - name: VisionQ contributors
+repository-code: "https://github.com/leifson1337/visionq"
+license: MIT
+version: 0.1.0
+date-released: 2026-05-20

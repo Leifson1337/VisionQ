@@ -1,43 +1,28 @@
-import time
-import torch
-from typing import Dict, Any
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class FeedbackRecord:
+    backend: str
+    latency_ms: float
+    memory_mb: float | None = None
+
 
 class FeedbackLoop:
-    """
-    Feedback System for Attention Kernel Optimization.
-    Records latency, throughput, and memory usage for kernel selection tuning.
-    """
+    """In-memory telemetry collector for offline router analysis."""
 
-    def __init__(self):
-        self.history = []
+    def __init__(self) -> None:
+        self.records: list[FeedbackRecord] = []
 
-    def record_metrics(
-        self,
-        kernel_name: str,
-        duration: float,
-        vram_used: float,
-        seq_len: int,
-        context_args: Dict[str, Any]
-    ):
-        """
-        Records the performance of a kernel execution.
-        """
-        metrics = {
-            "kernel": kernel_name,
-            "latency_ms": duration * 1000,
-            "vram_gb": vram_used,
-            "throughput": seq_len / duration if duration > 0 else 0,
-            "params": context_args
-        }
-        self.history.append(metrics)
+    def record(self, backend: str, latency_ms: float, memory_mb: float | None = None) -> None:
+        if latency_ms < 0:
+            raise ValueError("latency_ms must be non-negative")
+        self.records.append(FeedbackRecord(backend, latency_ms, memory_mb))
 
-        # In a real industrial system, this would update the policy model (Phase 3)
-        if len(self.history) % 100 == 0:
-            self._optimize_policy()
-
-    def _optimize_policy(self):
-        """Placeholder for Phase 3 RL/Learning optimization logic."""
-        pass
-
-    def get_summary(self):
-        return self.history
+    def summary(self) -> dict[str, float]:
+        totals: dict[str, list[float]] = {}
+        for record in self.records:
+            totals.setdefault(record.backend, []).append(record.latency_ms)
+        return {backend: sum(values) / len(values) for backend, values in totals.items()}

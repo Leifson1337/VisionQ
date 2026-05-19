@@ -1,0 +1,64 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: Benchmark device
+        required: true
+        default: cpu
+        type: choice
+        options: [cpu, cuda]
+
+jobs:
+  cpu:
+    if: inputs.device == 'cpu'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Run CPU benchmarks
+        run: |
+          python benchmarks/attention_benchmark.py \
+            --device cpu \
+            --seq-lens 128 512 \
+            --image-shapes 16x16 \
+            --video-shapes 2x8x8 \
+            --output benchmark-results/cpu.csv \
+            --metadata-output benchmark-results/cpu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visionq-cpu-benchmarks
+          path: benchmark-results/
+
+  cuda:
+    if: inputs.device == 'cuda'
+    runs-on: [self-hosted, linux, x64, cuda]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[triton]"
+      - name: Run CUDA benchmarks
+        run: |
+          python benchmarks/attention_benchmark.py \
+            --device cuda \
+            --seq-lens 128 512 1024 \
+            --image-shapes 16x16 32x32 \
+            --video-shapes 2x8x8 4x8x8 \
+            --output benchmark-results/cuda.csv \
+            --metadata-output benchmark-results/cuda.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visionq-cuda-benchmarks
+          path: benchmark-results/

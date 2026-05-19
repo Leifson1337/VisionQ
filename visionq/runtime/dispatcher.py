@@ -1,67 +1,61 @@
-from ..attention.registry import ATTENTION_REGISTRY
-from ..core.context import AttentionContext
-from ..kernels.triton.attention_kernel import TritonAttentionKernel
-from .kernel_router import KernelRouter
-from ..compiler.graph_ir.ir import AttentionGraph, QKVProjectionNode, MatMulNode, SoftmaxNode
-from ..compiler.optimizer.optimizer import GraphOptimizer
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import torch
+
+from ..attention.registry import ATTENTION_REGISTRY, get_attention_backend
 from ..compiler.fusion_engine.fusion import FusionEngine
-from typing import Type, Optional, Dict, Any
+from ..compiler.graph_ir.ir import AttentionGraph, MatMulNode, QKVProjectionNode, SoftmaxNode
+from ..compiler.optimizer.optimizer import GraphOptimizer
+from ..core.context import AttentionContext
+from .kernel_router import KernelRouter, RoutingDecision
+
+LOGGER = logging.getLogger(__name__)
+
 
 class AttentionDispatcher:
-    """
-    Intelligent Dispatcher using a learned KernelRouter for execution planning.
-    """
-    _selection_cache = {}
+    """Transparent backend selector for VisionQ attention modules."""
 
-    def __init__(self):
-        self.triton_kernel = TritonAttentionKernel()
+    def __init__(self) -> None:
+        get_attention_backend("flash")
         self.router = KernelRouter()
+        self.last_decision: RoutingDecision | None = None
 
-    def compile_graph(self, qkv_params: Dict[str, Any]) -> AttentionGraph:
-        """
-        Translates a request into a compiled attention plan.
-        """
+    def compile_graph(self, qkv_params: dict[str, Any]) -> AttentionGraph:
+        dim = qkv_params.get("dim")
+        if not isinstance(dim, int) or dim <= 0:
+            raise ValueError("compile_graph requires a positive integer 'dim'")
         graph = AttentionGraph()
-        # 1. Capture IR
-        graph.add_node(QKVProjectionNode(id="qkv", dim=qkv_params["dim"]))
-        graph.add_node(MatMulNode(id="attn_scores", transpose_b=True))
-        graph.add_node(SoftmaxNode(id="softmax"))
-
-        # 2. Optimize
+        graph.add_node(QKVProjectionNode(id="qkv", dim=dim, outputs=["scores"]))
+        graph.add_node(
+            MatMulNode(id="scores", inputs=["qkv"], outputs=["softmax"], transpose_b=True)
+        )
+        graph.add_node(SoftmaxNode(id="softmax", inputs=["scores"], outputs=[]))
         graph = GraphOptimizer(graph).optimize()
+        return FusionEngine(graph).fuse()
 
-        # 3. Fuse
-        graph = FusionEngine(graph).fuse()
-
-        return graph
-
-    def plan(self, context: AttentionContext) -> str:
-        """
-        Plans the execution using the KernelRouter and Compiler insights.
-        Returns the best backend name.
-        """
-        # Integrate Compiler insights here in the future
-        graph = self.compile_graph({"dim": 128})
-
-        selection, autotuned_params = self.router.plan_execution(context)
-        context.extra_args.update(autotuned_params)
-
-        if selection not in ATTENTION_REGISTRY:
-             selection = "flash" if "flash" in ATTENTION_REGISTRY else list(ATTENTION_REGISTRY.keys())[0]
-
-        return selection
+    def plan(self, context: AttentionContext) -> RoutingDecision:
+        decision = self.router.plan_execution(context)
+        if decision.backend not in ATTENTION_REGISTRY:
+            raise RuntimeError(f"Router selected unregistered backend '{decision.backend}'")
+        context.extra_args.update(decision.parameters)
+        self.last_decision = decision
+        LOGGER.debug("Attention backend decision: %s", decision)
+        return decision
 
     def select(self, context: AttentionContext) -> str:
-        """Compatibility layer for backend selection."""
-        return self.plan(context)
+        return self.plan(context).backend
 
-    def dispatch_kernel(self, q, k, v, context):
-        """Low-level kernel dispatch path."""
-        if context.device.type == "cuda":
-             # Use the industrial block-based kernel
-             return self.triton_kernel.forward(q, k, v, context)
-
-        # Fallback to standard SDPA for CPU
-        from ..attention.flash import FlashAttention
-        fallback = FlashAttention(q.shape[-1])
-        return fallback(q, k, v, context)
+    def dispatch_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+    ) -> torch.Tensor:
+        backend_name = self.select(context)
+        backend_cls = get_attention_backend(backend_name)
+        backend = backend_cls(q.shape[-1] * q.shape[1], num_heads=q.shape[1])
+        return backend(q, k, v, context, block_size=context.extra_args.get("block_size", 32))

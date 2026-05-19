@@ -1,40 +1,31 @@
-from ..graph_ir.ir import AttentionGraph, QKVProjectionNode, MatMulNode
-from typing import List, Dict, Set
+from __future__ import annotations
+
+from ..graph_ir.ir import AttentionGraph, QKVProjectionNode
+
 
 class GraphOptimizer:
-    """
-    Compiler-level Optimizer for Attention Graphs.
-    Performs redundant op elimination and operator reordering.
-    """
-    def __init__(self, graph: AttentionGraph):
+    """Small semantics-preserving optimizer for the reference attention IR."""
+
+    def __init__(self, graph: AttentionGraph) -> None:
         self.graph = graph
 
     def optimize(self) -> AttentionGraph:
-        """Runs the optimization pass."""
-        self._eliminate_redundant_projections()
-        self._reorder_masking()
+        self._eliminate_duplicate_projections()
+        self.graph.topological_order()
         return self.graph
 
-    def _eliminate_redundant_projections(self):
-        """Removes shared K/V projections if repeated."""
-        seen_params: Dict[tuple, str] = {}
-        redundant_nodes: Set[str] = set()
-
-        for node_id, node in list(self.graph.nodes.items()):
+    def _eliminate_duplicate_projections(self) -> None:
+        seen: dict[tuple[tuple[str, ...], int, int], str] = {}
+        replacements: dict[str, str] = {}
+        for node_id in self.graph.topological_order():
+            node = self.graph.nodes[node_id]
             if isinstance(node, QKVProjectionNode):
-                # Simple heuristic: same dim and num_heads means redundant if inputs are same
                 key = (tuple(node.inputs), node.dim, node.num_heads)
-                if key in seen_params:
-                    redundant_nodes.add(node_id)
+                if key in seen:
+                    replacements[node_id] = seen[key]
                 else:
-                    seen_params[key] = node_id
-
-        for node_id in redundant_nodes:
-            del self.graph.nodes[node_id]
-
-    def _reorder_masking(self):
-        """Moves mask operation before matmul if it reduces compute."""
-        # In a real compiler, we would analyze the data flow to see if
-        # a mask can be applied early to skip rows/cols.
-        # Here we implement a node-swapping logic if specific conditions are met.
-        pass
+                    seen[key] = node_id
+        for old, new in replacements.items():
+            for node in self.graph.nodes.values():
+                node.inputs = [new if inp == old else inp for inp in node.inputs]
+            self.graph.remove_node(old)

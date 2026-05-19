@@ -1,21 +1,27 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
-from .base import AttentionBackend
-from .registry import register_attention
-from ..core.context import AttentionContext
+from __future__ import annotations
 
-@register_attention("sparse")
+import torch
+import torch.nn.functional as F
+
+from ..core.context import AttentionContext
+from .base import AttentionBackend
+from .registry import AttentionBackendName, register_attention
+
+
+@register_attention(AttentionBackendName.SPARSE)
 class SparseAttention(AttentionBackend):
-    """
-    Block-Sparse Attention Abstraction.
-    Correctly handles (B, H, N, D) inputs.
-    """
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
-        super().__init__(dim)
-        self.num_heads = num_heads
-        self.attn_drop_p = attn_drop
+    """Reference strided key/value attention controlled by ``context.dilation``."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        del qkv_bias, proj_drop
+        super().__init__(dim, num_heads=num_heads, attn_drop=attn_drop)
 
     def forward(
         self,
@@ -24,24 +30,20 @@ class SparseAttention(AttentionBackend):
         v: torch.Tensor,
         context: AttentionContext,
         block_size: int = 32,
-        mask: Optional[torch.Tensor] = None
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # Input: (B, H, N, D)
-        B, H, N, D = q.shape
-        stride = max(1, context.dilation)
-
-        # Sparse subset of keys/values
+        del block_size
+        self.validate_qkv(q, k, v)
+        stride = context.dilation
         k_sparse = k[:, :, ::stride, :]
         v_sparse = v[:, :, ::stride, :]
-
-        scale = D ** -0.5
-        attn = (q * scale) @ k_sparse.transpose(-2, -1)
-
-        if mask is not None:
-            # Mask must be sliced to match sparse dimensions
-            m_sparse = mask[:, :, :, ::stride]
-            attn += m_sparse
-
-        attn = attn.softmax(dim=-1)
-        out = attn @ v_sparse
+        sparse_mask = None if mask is None else mask[..., ::stride]
+        out = F.scaled_dot_product_attention(
+            q,
+            k_sparse,
+            v_sparse,
+            attn_mask=sparse_mask,
+            dropout_p=self.attn_drop_p if self.training else 0.0,
+            is_causal=False,
+        )
         return out

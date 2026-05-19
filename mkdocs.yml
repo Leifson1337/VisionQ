@@ -1,0 +1,17 @@
+site_name: VisionQ
+repo_url: https://github.com/leifson1337/visionq
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Backends: backends.md
+  - Router: router.md
+  - Compiler: compiler.md
+  - Benchmarks: benchmarks.md
+  - API: api.md
+  - Support Matrix: support_matrix.md
+  - Backend Development: backend_development.md
+  - Troubleshooting: troubleshooting.md
+  - Release: release.md
+  - Contributing: contributing.md

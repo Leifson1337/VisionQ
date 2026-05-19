@@ -1,35 +1,40 @@
+from __future__ import annotations
+
+from typing import Any
+
 import torch
-from typing import Dict, Any
+
 from ..core.context import AttentionContext
 
+
 class FeatureExtractor:
-    """
-    Industrial Feature Extractor for Attention Routing.
-    Gathers metrics from input tensors and hardware state.
-    """
+    """Extract routing features from validated attention context."""
 
     @staticmethod
-    def extract(context: AttentionContext) -> Dict[str, Any]:
-        """
-        Extracts a feature dictionary from execution context.
-        """
-        features = {
+    def extract(context: AttentionContext) -> dict[str, Any]:
+        device = context.device or torch.device("cpu")
+        spatial_complexity = (
+            context.spatial_shape[0] * context.spatial_shape[1]
+            if context.spatial_shape is not None
+            else 0
+        )
+        features: dict[str, Any] = {
             "sequence_length": context.sequence_length,
             "modality": context.modality,
-            "spatial_complexity": (context.spatial_shape[0] * context.spatial_shape[1]) if context.spatial_shape else 0,
+            "spatial_complexity": spatial_complexity,
             "temporal_complexity": context.temporal_dim or 1,
-            "sparsity_estimate": 1.0 / max(1, context.dilation),
-            "device_type": context.device.type if context.device else "cpu",
+            "sparsity_estimate": 1.0 / context.dilation,
+            "device_type": device.type,
+            "compute_capability": (0, 0),
+            "vram_total": 0.0,
+            "vram_free": 0.0,
+            "memory_pressure": False,
         }
-
-        # Hardware-specific features (simplified industrial version)
-        if features["device_type"] == "cuda":
-            features["compute_capability"] = torch.cuda.get_device_capability() if torch.cuda.is_available() else (0, 0)
-            features["vram_total"] = torch.cuda.get_device_properties(0).total_memory / (1024**3) if torch.cuda.is_available() else 0
-            features["vram_free"] = (torch.cuda.mem_get_info()[0] / (1024**3)) if torch.cuda.is_available() else 0
-        else:
-            features["compute_capability"] = (0, 0)
-            features["vram_total"] = 0
-            features["vram_free"] = 0
-
+        if device.type == "cuda" and torch.cuda.is_available():
+            idx = device.index if device.index is not None else torch.cuda.current_device()
+            free, total = torch.cuda.mem_get_info(idx)
+            features["compute_capability"] = torch.cuda.get_device_capability(idx)
+            features["vram_total"] = total / (1024**3)
+            features["vram_free"] = free / (1024**3)
+            features["memory_pressure"] = total > 0 and free / total < 0.2
         return features

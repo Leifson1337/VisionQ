@@ -1,23 +1,56 @@
+from __future__ import annotations
+
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from .base import AttentionBackend
-from .registry import register_attention
+
 from ..core.context import AttentionContext
-from typing import Optional
+from .base import AttentionBackend
+from .registry import AttentionBackendName, register_attention
 
-@register_attention("spatial_neighborhood")
+
+def _local_attention_2d(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    spatial_shape: tuple[int, int],
+    window: tuple[int, int],
+    dropout_p: float,
+    training: bool,
+) -> torch.Tensor:
+    bp, heads, tokens, dim = q.shape
+    height, width = spatial_shape
+    wh, ww = window
+    if height * width != tokens:
+        raise ValueError(f"spatial_shape {spatial_shape} does not match token count {tokens}")
+    q_img = q.reshape(bp, heads, height, width, dim)
+    k_img = k.reshape(bp, heads, height, width, dim).permute(0, 1, 4, 2, 3)
+    v_img = v.reshape(bp, heads, height, width, dim).permute(0, 1, 4, 2, 3)
+    pad_h, pad_w = wh // 2, ww // 2
+    k_windows = F.pad(k_img, (pad_w, pad_w, pad_h, pad_h)).unfold(3, wh, 1).unfold(4, ww, 1)
+    v_windows = F.pad(v_img, (pad_w, pad_w, pad_h, pad_h)).unfold(3, wh, 1).unfold(4, ww, 1)
+    k_windows = k_windows.reshape(bp, heads, dim, height, width, wh * ww)
+    v_windows = v_windows.reshape(bp, heads, dim, height, width, wh * ww)
+    scores = torch.einsum("bhxyd,bhdxyk->bhxyk", q_img * (dim**-0.5), k_windows)
+    attn = torch.softmax(scores, dim=-1)
+    attn = F.dropout(attn, p=dropout_p, training=training)
+    out = torch.einsum("bhxyk,bhdxyk->bhxyd", attn, v_windows)
+    return out.reshape(bp, heads, tokens, dim)
+
+
+@register_attention(AttentionBackendName.SPATIAL_NEIGHBORHOOD)
 class SpatialNeighborhoodAttention(AttentionBackend):
-    """
-    Computes spatial-only neighborhood attention efficiently using unfolding.
-    Avoids O(N^2) memory bottlenecks by using sliding window logic.
-    """
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
-        super().__init__(dim)
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.attn_drop = nn.Dropout(attn_drop)
+    """Reference spatial sliding-window attention for image tokens."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        del qkv_bias, proj_drop
+        super().__init__(dim, num_heads=num_heads, attn_drop=attn_drop)
 
     def forward(
         self,
@@ -26,123 +59,85 @@ class SpatialNeighborhoodAttention(AttentionBackend):
         v: torch.Tensor,
         context: AttentionContext,
         block_size: int = 32,
-        mask: Optional[torch.Tensor] = None
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        Efficient Neighborhood Attention using unfolding.
-        Expects Q, K, V projected.
-        """
-        # q, k, v are (B, T, H_heads, N_spatial, D) or (B, H_heads, N_spatial, D)
-        orig_shape = q.shape
-        if q.dim() == 5:
-            B, T, H_heads, N_spatial, D = q.shape
-            q = q.reshape(B * T, H_heads, N_spatial, D)
-            k = k.reshape(B * T, H_heads, N_spatial, D)
-            v = v.reshape(B * T, H_heads, N_spatial, D)
-
-        B_p, H_heads, N_spatial, D = q.shape
-
-        # Spatial shape inference
-        H_s, W_s = context.spatial_shape if context.spatial_shape else (int(N_spatial**0.5), int(N_spatial**0.5))
-        window = context.spatial_window[0] if (context.spatial_window and context.spatial_window[0] > 0) else 7
-
-        if H_s * W_s != N_spatial:
-            # Fallback for irregular shapes (e.g. sequence without spatial context)
-            attn = (q * self.scale) @ k.transpose(-2, -1)
-            if mask is not None: attn += mask
-            attn = attn.softmax(dim=-1)
-            out = attn @ v
-        else:
-            # Standard Neighborhood Attention (Local Sliding Window)
-            # 1. Reshape to image format
-            q = q.reshape(B_p, H_heads, H_s, W_s, D)
-            k = k.reshape(B_p, H_heads, H_s, W_s, D)
-            v = v.reshape(B_p, H_heads, H_s, W_s, D)
-
-            # 2. Extract windows for K, V
-            # (B, H, H_s, W_s, D) -> (B, H, D, H_s, W_s)
-            k = k.permute(0, 1, 4, 2, 3)
-            v = v.permute(0, 1, 4, 2, 3)
-
-            # Padding for boundaries
-            pad = window // 2
-            k_pad = F.pad(k, (pad, pad, pad, pad))
-            v_pad = F.pad(v, (pad, pad, pad, pad))
-
-            # Unfold to get local windows: (B, H, D, H_s, W_s, W_size, W_size)
-            k_windows = k_pad.unfold(3, window, 1).unfold(4, window, 1)
-            v_windows = v_pad.unfold(3, window, 1).unfold(4, window, 1)
-
-            # 3. Compute Attention
-            # Q: (B, H, H_s, W_s, D)
-            # K_win: (B, H, D, H_s, W_s, W_size*W_size)
-            k_windows = k_windows.reshape(B_p, H_heads, D, H_s, W_s, -1)
-            v_windows = v_windows.reshape(B_p, H_heads, D, H_s, W_s, -1)
-
-            # Attention scores: (B, H, H_s, W_s, W_size*W_size)
-            # q * scale @ k_win
-            attn = torch.einsum('bhxwd,bhdxwk->bhxwk', q * self.scale, k_windows)
-
-            if mask is not None:
-                # Local masking would be applied here if needed
-                pass
-
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-
-            # 4. Accumulate values
-            # (B, H, H_s, W_s, W_size*W_size) @ (B, H, H_s, W_s, W_size*W_size, D)
-            out = torch.einsum('bhxwk,bhdxwk->bhxwd', attn, v_windows)
-            out = out.reshape(B_p, H_heads, N_spatial, D)
-
-        if len(orig_shape) == 5:
-            out = out.reshape(orig_shape)
-        return out
-
-@register_attention("temporal_neighborhood")
-class TemporalNeighborhoodAttention(AttentionBackend):
-    """
-    Computes temporal-only neighborhood attention across the T dimension.
-    Input must be 5D: (B, T, H, N, D)
-    """
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
-        super().__init__(dim)
-        self.num_heads = num_heads
-        self.scale = (dim // num_heads) ** -0.5
-        self.attn_drop = nn.Dropout(attn_drop)
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        context: AttentionContext,
-        block_size: int = 32,
-        mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        if q.dim() != 5:
-            return q
-
-        B, T, H, N, D = q.shape
-        # Permute to (B, N, H, T, D) to attend over T
-        q_p = q.permute(0, 3, 2, 1, 4).reshape(B * N, H, T, D)
-        k_p = k.permute(0, 3, 2, 1, 4).reshape(B * N, H, T, D)
-        v_p = v.permute(0, 3, 2, 1, 4).reshape(B * N, H, T, D)
-
-        q_p = q_p * self.scale
-        attn = (q_p @ k_p.transpose(-2, -1)) # (B*N, H, T, T)
-
-        if context.temporal_window > 0:
-            indices = torch.arange(T, device=q.device)
-            dist = torch.abs(indices.unsqueeze(1) - indices.unsqueeze(0))
-            t_mask = torch.full((T, T), float('-inf'), device=q.device)
-            t_mask[dist <= context.temporal_window // 2] = 0
-            attn = attn + t_mask
-
+        del block_size
         if mask is not None:
-             attn = attn + mask
+            raise ValueError("SpatialNeighborhoodAttention does not support attn_mask")
+        self.validate_qkv(q, k, v, allow_5d=True)
+        window = context.spatial_window or (context.window_size or 3, context.window_size or 3)
+        if q.dim() == 5:
+            b, t, heads, tokens, dim = q.shape
+            if context.spatial_shape is None:
+                raise ValueError("spatial_shape is required for 5D SpatialNeighborhoodAttention")
+            q_flat = q.reshape(b * t, heads, tokens, dim)
+            k_flat = k.reshape(b * t, heads, tokens, dim)
+            v_flat = v.reshape(b * t, heads, tokens, dim)
+            out = _local_attention_2d(
+                q_flat,
+                k_flat,
+                v_flat,
+                context.spatial_shape,
+                window,
+                self.attn_drop_p,
+                self.training,
+            )
+            return out.reshape(b, t, heads, tokens, dim)
+        if context.spatial_shape is None:
+            raise ValueError("spatial_shape is required for SpatialNeighborhoodAttention")
+        return _local_attention_2d(
+            q, k, v, context.spatial_shape, window, self.attn_drop_p, self.training
+        )
 
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        out = (attn @ v_p).reshape(B, N, H, T, D).permute(0, 3, 2, 1, 4)
-        return out
+
+@register_attention(AttentionBackendName.TEMPORAL_NEIGHBORHOOD)
+class TemporalNeighborhoodAttention(AttentionBackend):
+    """Reference temporal sliding-window attention for video tokens."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        del qkv_bias, proj_drop
+        super().__init__(dim, num_heads=num_heads, attn_drop=attn_drop)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del block_size
+        self.validate_qkv(q, k, v, allow_5d=True)
+        if q.dim() != 5:
+            raise ValueError(
+                "TemporalNeighborhoodAttention expects (B, T, heads, spatial_tokens, D)"
+            )
+        b, t, heads, tokens, dim = q.shape
+        q_t = q.permute(0, 3, 2, 1, 4).reshape(b * tokens, heads, t, dim)
+        k_t = k.permute(0, 3, 2, 1, 4).reshape(b * tokens, heads, t, dim)
+        v_t = v.permute(0, 3, 2, 1, 4).reshape(b * tokens, heads, t, dim)
+        attn_mask = mask
+        if context.temporal_window:
+            idx = torch.arange(t, device=q.device)
+            allowed = (idx[:, None] - idx[None, :]).abs() <= context.temporal_window // 2
+            local_mask = torch.zeros((t, t), device=q.device, dtype=q.dtype).masked_fill(
+                ~allowed, float("-inf")
+            )
+            attn_mask = local_mask if attn_mask is None else attn_mask + local_mask
+        out = F.scaled_dot_product_attention(
+            q_t,
+            k_t,
+            v_t,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_drop_p if self.training else 0.0,
+            is_causal=context.causal,
+        )
+        return out.reshape(b, tokens, heads, t, dim).permute(0, 3, 2, 1, 4)

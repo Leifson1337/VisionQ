@@ -1,53 +1,42 @@
-from typing import Dict, Any, List
-import math
+from __future__ import annotations
 
-class PolicyModel:
-    """
-    Policy Model for Attention Kernel Scoring.
-    Phase 1: Rule-based heuristic scoring.
-    Phase 2: Hook for MLP/RL parameters.
-    """
+from typing import Any
 
-    def __init__(self):
-        # Industrial weights (placeholders for learned weights)
-        self.weights = {
-            "latency": -1.0,
-            "memory": -0.5,
-            "accuracy": 0.8
-        }
+from ..attention.registry import AttentionBackendName
 
-    def score_kernels(self, features: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Calculates efficiency scores for each available attention kernel.
-        """
-        N = features["sequence_length"]
+
+class HeuristicPolicy:
+    """Deterministic routing heuristic; no learned weights are used."""
+
+    version = "heuristic-v1"
+
+    def score_backends(self, features: dict[str, Any]) -> dict[str, float]:
+        n = int(features["sequence_length"])
         modality = features["modality"]
-        is_cuda = features["device_type"] == "cuda"
-        memory_pressure = features["vram_total"] > 0 and (features["vram_free"] / features["vram_total"] < 0.2)
+        spatial = int(features["spatial_complexity"])
+        temporal = int(features["temporal_complexity"])
+        memory_pressure = bool(features["memory_pressure"])
 
-        scores = {}
-
-        # 1. Flash Attention Score (SDPA)
-        # Prefers medium sequences on GPU
-        scores["flash"] = 100.0 if (N < 2048 and is_cuda) else 50.0
-
-        # 2. Neighborhood Attention Score
-        # Prefers images and local structures
-        scores["neighborhood"] = 120.0 if (modality == "image" or modality == "video") else 30.0
-        if N > 4096: scores["neighborhood"] += 50.0 # Scales better than O(N^2)
-
-        # 3. Sparse Attention Score
-        # Prefers extremely long sequences or high memory pressure
-        scores["sparse"] = 150.0 if (N > 8192 or memory_pressure) else 10.0
-
-        # 4. Spatio-Temporal Hybrid Score
-        scores["spatiotemporal_hybrid"] = 140.0 if (modality == "video") else 0.0
-
-        # 5. Chunked Streaming Score
-        scores["chunked_streaming"] = 110.0 if (N > 16384) else 5.0
-
+        scores = {name.value: 0.0 for name in AttentionBackendName}
+        scores[AttentionBackendName.FLASH.value] = 100.0
+        if n > 4096:
+            scores[AttentionBackendName.FLASH.value] -= 30.0
+        if modality == "image" and spatial > 0:
+            scores[AttentionBackendName.SPATIAL_NEIGHBORHOOD.value] = 120.0
+        if modality == "video" and temporal > 1:
+            scores[AttentionBackendName.SPATIOTEMPORAL_HYBRID.value] = 140.0
+            scores[AttentionBackendName.TEMPORAL_NEIGHBORHOOD.value] = 80.0
+        if n >= 8192 or memory_pressure:
+            scores[AttentionBackendName.SPARSE.value] = 115.0
+        if n >= 16384:
+            scores[AttentionBackendName.CHUNKED_STREAMING.value] = 130.0
         return scores
 
-    def get_best_kernel(self, scores: Dict[str, float]) -> str:
-        """Returns the kernel name with the highest policy score."""
-        return max(scores, key=scores.get)
+    @staticmethod
+    def get_best_backend(scores: dict[str, float]) -> str:
+        if not scores:
+            raise RuntimeError("cannot select a backend from empty scores")
+        return max(scores, key=lambda name: scores[name])
+
+
+PolicyModel = HeuristicPolicy

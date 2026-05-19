@@ -1,14 +1,13 @@
 import torch
-import torch.nn.functional as F
-from typing import Optional
+
 
 def cpu_tiled_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     block_size: int = 32,
-    mask: Optional[torch.Tensor] = None,
-    scale: float = 1.0
+    mask: torch.Tensor | None = None,
+    scale: float = 1.0,
 ) -> torch.Tensor:
     """
     CPU Fallback for tiled attention computation.
@@ -23,7 +22,7 @@ def cpu_tiled_attention(
 
         # Accumulators for this tile
         row_sum = torch.zeros(B, H, q_tile.shape[2], 1, device=q.device)
-        row_max = torch.full((B, H, q_tile.shape[2], 1), float('-inf'), device=q.device)
+        row_max = torch.full((B, H, q_tile.shape[2], 1), float("-inf"), device=q.device)
         tile_out = torch.zeros(B, H, q_tile.shape[2], D, device=q.device)
 
         for j in range(0, N, block_size):
@@ -34,7 +33,7 @@ def cpu_tiled_attention(
             attn_tile = (q_tile @ k_tile.transpose(-2, -1)) * scale
 
             if mask is not None:
-                attn_tile = attn_tile + mask[:, :, i:i+block_size, j:j+block_size]
+                attn_tile = attn_tile + mask[:, :, i : i + block_size, j : j + block_size]
 
             # Online softmax logic (FlashAttention style)
             curr_max = torch.max(attn_tile, dim=-1, keepdim=True)[0]

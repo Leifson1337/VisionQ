@@ -1,20 +1,27 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
-from .base import AttentionBackend
-from .registry import register_attention
-from ..core.context import AttentionContext
+from __future__ import annotations
 
-@register_attention("flash")
+import torch
+import torch.nn.functional as F
+
+from ..core.context import AttentionContext
+from .base import AttentionBackend
+from .registry import AttentionBackendName, register_attention
+
+
+@register_attention(AttentionBackendName.FLASH)
 class FlashAttention(AttentionBackend):
-    """
-    Flash Attention Backend using PyTorch SDPA.
-    """
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
-        super().__init__(dim)
-        self.num_heads = num_heads
-        self.attn_drop_p = attn_drop
+    """PyTorch SDPA backend. Kernel selection is delegated to PyTorch."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        del qkv_bias, proj_drop
+        super().__init__(dim, num_heads=num_heads, attn_drop=attn_drop)
 
     def forward(
         self,
@@ -23,13 +30,15 @@ class FlashAttention(AttentionBackend):
         v: torch.Tensor,
         context: AttentionContext,
         block_size: int = 32,
-        mask: Optional[torch.Tensor] = None
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # SDPA handles block-based execution and tiling internally on modern GPUs.
-        # This acts as our 'fused_attention' backend.
+        del block_size
+        self.validate_qkv(q, k, v)
         return F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=mask,
             dropout_p=self.attn_drop_p if self.training else 0.0,
-            is_causal=False
+            is_causal=context.causal,
         )

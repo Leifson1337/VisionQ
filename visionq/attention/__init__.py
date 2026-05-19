@@ -1,21 +1,28 @@
 from .base import AttentionBackend
-from .registry import register_attention, get_attention_backend
-from .neighborhood import NeighborhoodAttention
 from .flash import FlashAttention
+from .registry import (
+    ATTENTION_REGISTRY,
+    AttentionBackendName,
+    available_attention_backends,
+    get_attention_backend,
+    register_attention,
+)
 from .sparse import SparseAttention
 from .spatial_temporal_ops import SpatialNeighborhoodAttention, TemporalNeighborhoodAttention
 from .spatiotemporal import SpatioTemporalHybridAttention
 from .streaming import ChunkedStreamingAttention
 
 __all__ = [
+    "ATTENTION_REGISTRY",
     "AttentionBackend",
-    "register_attention",
-    "get_attention_backend",
-    "NeighborhoodAttention",
+    "AttentionBackendName",
+    "ChunkedStreamingAttention",
     "FlashAttention",
     "SparseAttention",
     "SpatialNeighborhoodAttention",
-    "TemporalNeighborhoodAttention",
     "SpatioTemporalHybridAttention",
-    "ChunkedStreamingAttention"
+    "TemporalNeighborhoodAttention",
+    "available_attention_backends",
+    "get_attention_backend",
+    "register_attention",
 ]

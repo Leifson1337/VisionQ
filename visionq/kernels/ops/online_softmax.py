@@ -1,17 +1,16 @@
 import torch
-from typing import Tuple
+
 
 class OnlineSoftmax:
     """
     Numerically stable streaming normalization (FlashAttention principle).
     Allows computing softmax over tiles without materializing the full NxN matrix.
     """
+
     @staticmethod
     def update(
-        prev_max: torch.Tensor,
-        prev_sum: torch.Tensor,
-        current_scores: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        prev_max: torch.Tensor, prev_sum: torch.Tensor, current_scores: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Updates the running max and sum exponentials.
 

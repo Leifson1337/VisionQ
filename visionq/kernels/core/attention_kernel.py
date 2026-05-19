@@ -1,15 +1,15 @@
-import torch
 from abc import ABC, abstractmethod
-from typing import Optional, Literal
+from typing import Literal
+
+import torch
+
 from ...core.context import AttentionContext
 
 MaskType = Literal["none", "causal", "neighborhood", "block_sparse"]
 
+
 class AttentionKernel(ABC):
-    """
-    Unified GPU Attention Kernel Abstraction.
-    Treats attention as a memory-bandwidth limited streaming operation.
-    """
+    """Abstract interface for blockwise attention kernels."""
 
     @abstractmethod
     def forward(
@@ -19,18 +19,10 @@ class AttentionKernel(ABC):
         v: torch.Tensor,
         context: AttentionContext,
         block_size: int = 64,
-        mask_type: MaskType = "none"
+        mask_type: MaskType = "none",
     ) -> torch.Tensor:
-        """
-        Executes the block-based attention pipeline.
-
-        Pipeline:
-        1. Tile Loading (HBM -> SRAM)
-        2. Partial QK^T Score Computation
-        3. Online Softmax Update (Numerically Stable)
-        4. Incremental V Accumulation
-        """
-        pass
+        """Execute a blockwise attention forward pass."""
+        raise NotImplementedError
 
     @staticmethod
     def get_optimal_block_size(device: torch.device, head_dim: int) -> int:
