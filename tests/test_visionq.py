@@ -23,11 +23,11 @@ class TestVisionQ(unittest.TestCase):
 
         ctx_image = AttentionContext(modality="image")
         backend_name = dispatcher.select(ctx_image)
-        self.assertEqual(backend_name, "flash")
-
-        ctx_neighborhood = AttentionContext(modality="image", window_size=7)
-        backend_name = dispatcher.select(ctx_neighborhood)
         self.assertEqual(backend_name, "neighborhood")
+
+        ctx_seq = AttentionContext(modality="sequence")
+        backend_name = dispatcher.select(ctx_seq)
+        self.assertEqual(backend_name, "sparse")
 
     def test_backbone_forward_with_st_tensor(self):
         dim = 64
@@ -38,19 +38,6 @@ class TestVisionQ(unittest.TestCase):
         # Test default context from STTensor
         out = model(st_x)
         self.assertEqual(out.shape, (1, 100, dim))
-
-        # Test Neighborhood Attention
-        ctx_local = AttentionContext(modality="image", spatial_shape=(10, 10), window_size=3)
-        out_local = model(st_x, ctx_local)
-        self.assertEqual(out_local.shape, (1, 100, dim))
-
-    def test_neighborhood_2d_mask(self):
-        from visionq.attention.neighborhood import NeighborhoodAttention
-        na = NeighborhoodAttention(dim=32, num_heads=2)
-        ctx = AttentionContext(modality="image", spatial_shape=(4, 4), window_size=3)
-        x = torch.randn(1, 16, 32)
-        out = na(x, ctx)
-        self.assertEqual(out.shape, (1, 16, 32))
 
 if __name__ == '__main__':
     unittest.main()

@@ -15,12 +15,11 @@ class VisionBackboneBlock(nn.Module):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
 
-        # We store backends in a ModuleDict.
-        # For industrial-grade production, we only instantiate what we might need.
+        # Initialize backends eagerly to ensure parameter tracking
         self.backends = nn.ModuleDict()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.qkv_bias = qkv_bias
+        from ..attention.registry import ATTENTION_REGISTRY
+        for name, cls in ATTENTION_REGISTRY.items():
+            self.backends[name] = cls(dim, num_heads=num_heads, qkv_bias=qkv_bias)
 
         self.dispatcher = AttentionDispatcher()
 
@@ -32,46 +31,31 @@ class VisionBackboneBlock(nn.Module):
             nn.Linear(mlp_hidden_dim, dim)
         )
 
-    def _get_backend(self, name: str) -> nn.Module:
-        """Lazily instantiates backends to save memory."""
-        if name not in self.backends:
-            backend_cls = get_attention_backend(name)
-            backend = backend_cls(self.dim, num_heads=self.num_heads, qkv_bias=self.qkv_bias)
 
-            # Ensure the new backend is on the correct device and dtype
-            # We use a parameter from this module as a reference.
-            reference_param = next(self.parameters(), None)
-            if reference_param is not None:
-                backend.to(device=reference_param.device, dtype=reference_param.dtype)
-
-            self.backends[name] = backend
-        return self.backends[name]
-
-    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> torch.Tensor:
+    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> STTensor:
         """
         Forward pass with dynamic routing.
-
-        Args:
-            x: Input tensor or STTensor.
-            context: Optional AttentionContext. If missing, it's derived from STTensor.
+        Returns an STTensor to maintain consistency across blocks.
         """
         st_x = as_st_tensor(x)
         if context is None:
             context = AttentionContext.from_st_tensor(st_x)
 
         residual = st_x.unwrap()
-        x = self.norm1(residual)
+        hidden_states = self.norm1(residual)
 
         # Dispatch
         backend_name = self.dispatcher.select(context)
-        backend = self._get_backend(backend_name)
+        backend = self.backends[backend_name]
 
-        x = backend(x, context)
-        x = residual + x
+        hidden_states = backend(hidden_states, context)
+        hidden_states = residual + hidden_states
 
         # MLP
-        x = x + self.mlp(self.norm2(x))
-        return x
+        hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
+
+        # Return STTensor to preserve metadata for the next layer
+        return STTensor(hidden_states, st_x.modality, st_x.spatial_shape, st_x.temporal_dim)
 
 class VisionBackbone(nn.Module):
     """
@@ -84,7 +68,10 @@ class VisionBackbone(nn.Module):
             for _ in range(depth)
         ])
 
-    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> torch.Tensor:
+    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> STTensor:
+        # Initial wrapping
+        x = as_st_tensor(x)
+
         for block in self.blocks:
             x = block(x, context)
         return x

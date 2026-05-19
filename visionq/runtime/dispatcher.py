@@ -14,23 +14,36 @@ class AttentionDispatcher:
     def select(self, context: AttentionContext) -> str:
         """
         Selection logic for attention backends.
-        Returns the name of the backend to use.
+        Returns the name of the backend to use based on industrial routing rules.
         """
         # Simple cache key
-        cache_key = (context.modality, context.window_size > 0, context.device.type if context.device else None)
+        cache_key = (
+            context.modality,
+            context.window_size,
+            context.dilation,
+            context.device.type if context.device else None
+        )
         if cache_key in self._selection_cache:
             return self._selection_cache[cache_key]
 
-        if context.window_size > 0:
+        # Industrial Routing Rules:
+        # 1. image -> neighborhood default
+        # 2. video -> neighborhood (spatio-temporal) default
+        # 3. long sequence / specific dilation -> sparse
+        # 4. global / default -> flash
+
+        if context.modality == "image":
             selection = "neighborhood"
         elif context.modality == "video":
-            selection = "flash"
+            selection = "neighborhood"
+        elif context.dilation > 1 or context.modality == "sequence":
+            selection = "sparse"
         else:
             selection = "flash"
 
-        # Ensure selection exists in registry
+        # Ensure selection exists in registry, fallback to flash then any
         if selection not in ATTENTION_REGISTRY:
-            selection = list(ATTENTION_REGISTRY.keys())[0]
+            selection = "flash" if "flash" in ATTENTION_REGISTRY else list(ATTENTION_REGISTRY.keys())[0]
 
         self._selection_cache[cache_key] = selection
         return selection
