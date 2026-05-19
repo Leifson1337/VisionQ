@@ -57,6 +57,22 @@ class SpatioTemporalTensor:
     def flatten_all(self) -> torch.Tensor:
         return self._x.reshape(self.B, self.T * self.H * self.W, self.C)
 
+    def to_tiles(self, tile_size: Tuple[int, int]) -> torch.Tensor:
+        """
+        Partitions the spatial dimensions into tiles.
+        Returns: (B, T, num_tiles, tile_H * tile_W, C)
+        """
+        th, tw = tile_size
+        B, T, H, W, C = self.shape
+        if H % th != 0 or W % tw != 0:
+            # Padding would happen here in industrial version
+            pass
+
+        # (B, T, H//th, th, W//tw, tw, C) -> (B, T, H//th * W//tw, th * tw, C)
+        x = self._x.reshape(B, T, H // th, th, W // tw, tw, C)
+        x = x.permute(0, 1, 2, 4, 3, 5, 6).reshape(B, T, -1, th * tw, C)
+        return x
+
     def unwrap(self) -> torch.Tensor: return self._x
 
     def to(self, *args, **kwargs) -> 'SpatioTemporalTensor':

@@ -21,19 +21,24 @@ class AttentionDispatcher:
         if cache_key in self._selection_cache:
             return self._selection_cache[cache_key]
 
-        if context.modality == "image":
+        # Advanced Kernel Dispatch Logic
+        if context.sequence_length < 1024:
+            # Small sequences fit in cache, use fused IO-aware kernel
+            selection = "flash"
+        elif context.modality == "video" and context.temporal_dim and context.temporal_dim > 16:
+            # Long videos use block sparse temporal to avoid T^2 complexity
+            selection = "sparse"
+        elif context.modality == "image":
+            # Primary mode for image is neighborhood (local window)
             selection = "neighborhood"
         elif context.modality == "video":
             if context.attention_mode == "spatio_temporal":
                 selection = "spatiotemporal_hybrid"
-            elif context.attention_mode == "temporal_only":
-                selection = "temporal_neighborhood"
-            elif context.attention_mode == "spatial_only":
-                selection = "spatial_neighborhood"
             else:
-                selection = "neighborhood" # Default 3D neighborhood
-        elif context.dilation > 1 or context.modality == "sequence":
-            selection = "sparse"
+                selection = "neighborhood"
+        elif context.sequence_length > 4096:
+            # Massive sequences use streaming chunked execution
+            selection = "chunked_streaming"
         else:
             selection = "flash"
 

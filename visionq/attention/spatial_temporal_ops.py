@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from .base import AttentionBackend
 from .registry import register_attention
 from ..core.context import AttentionContext
+from typing import Optional
 
 @register_attention("spatial_neighborhood")
 class SpatialNeighborhoodAttention(AttentionBackend):
@@ -14,7 +15,8 @@ class SpatialNeighborhoodAttention(AttentionBackend):
     def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__(dim)
         self.num_heads = num_heads
-        self.scale = (dim // num_heads) ** -0.5
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
         self.attn_drop = nn.Dropout(attn_drop)
         self._mask_cache = {}
 
@@ -32,7 +34,15 @@ class SpatialNeighborhoodAttention(AttentionBackend):
         self._mask_cache[key] = mask
         return mask
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         orig_shape = q.shape
         if q.dim() == 5:
             B, T, H, N, D = q.shape
@@ -46,12 +56,12 @@ class SpatialNeighborhoodAttention(AttentionBackend):
 
         # Spatial shape inference
         H_s, W_s = context.spatial_shape if context.spatial_shape else (int(N**0.5), int(N**0.5))
-        if H_s * W_s != N:
-            # If mismatch, we can't apply spatial mask correctly, fallback to global or 1D
-            pass
-        else:
+        if H_s * W_s == N:
             window = context.spatial_window[0] if (context.spatial_window and context.spatial_window[0] > 0) else 7
-            mask = self._get_mask(H_s, W_s, window, q.device)
+            s_mask = self._get_mask(H_s, W_s, window, q.device)
+            attn = attn + s_mask
+
+        if mask is not None:
             attn = attn + mask
 
         attn = attn.softmax(dim=-1)
@@ -71,12 +81,20 @@ class TemporalNeighborhoodAttention(AttentionBackend):
     def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__(dim)
         self.num_heads = num_heads
-        self.scale = (dim // num_heads) ** -0.5
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
         self.attn_drop = nn.Dropout(attn_drop)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         if q.dim() != 5:
-            # Fallback for non-5D input
             return q
 
         B, T, H, N, D = q.shape
@@ -91,9 +109,12 @@ class TemporalNeighborhoodAttention(AttentionBackend):
         if context.temporal_window > 0:
             indices = torch.arange(T, device=q.device)
             dist = torch.abs(indices.unsqueeze(1) - indices.unsqueeze(0))
-            mask = torch.full((T, T), float('-inf'), device=q.device)
-            mask[dist <= context.temporal_window // 2] = 0
-            attn = attn + mask
+            t_mask = torch.full((T, T), float('-inf'), device=q.device)
+            t_mask[dist <= context.temporal_window // 2] = 0
+            attn = attn + t_mask
+
+        if mask is not None:
+             attn = attn + mask
 
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)

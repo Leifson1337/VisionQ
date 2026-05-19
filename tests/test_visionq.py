@@ -8,7 +8,6 @@ class TestVisionQ(unittest.TestCase):
     def test_st_tensor(self):
         x = torch.randn(1, 196, 128)
         st_tensor = SpatioTemporalTensor(x, modality="image", spatial_shape=(14, 14))
-        # Internally it becomes (1, 1, 14, 14, 128)
         self.assertEqual(st_tensor.shape, (1, 1, 14, 14, 128))
         self.assertEqual(st_tensor.modality, "image")
 
@@ -16,8 +15,9 @@ class TestVisionQ(unittest.TestCase):
         from visionq.runtime.dispatcher import AttentionDispatcher
         dispatcher = AttentionDispatcher()
 
-        ctx_image = AttentionContext(modality="image")
+        ctx_image = AttentionContext(modality="image", sequence_length=2048)
         backend_name = dispatcher.select(ctx_image)
+        # For large image, routing should be neighborhood
         self.assertEqual(backend_name, "neighborhood")
 
     def test_backbone_forward_with_st_tensor(self):

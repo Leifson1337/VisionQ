@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 from .base import AttentionBackend
 from .registry import register_attention
 from ..core.context import AttentionContext
@@ -17,7 +18,15 @@ class SparseAttention(AttentionBackend):
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_drop_p = attn_drop
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Implements a mask-based sparsity system or block-sparse kernels.
         Baseline: uses strided attention logic for long sequences.

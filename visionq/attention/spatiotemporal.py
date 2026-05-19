@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 from .base import AttentionBackend
 from .registry import register_attention, get_attention_backend
 from ..core.context import AttentionContext
@@ -18,7 +19,15 @@ class SpatioTemporalHybridAttention(AttentionBackend):
         self.spatial_op = get_attention_backend("spatial_neighborhood")(dim, num_heads, qkv_bias, attn_drop, proj_drop)
         self.temporal_op = get_attention_backend("temporal_neighborhood")(dim, num_heads, qkv_bias, attn_drop, proj_drop)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # 1. Spatial Step
         # Expects (B, H, N, D)
         out = self.spatial_op(q, k, v, context)

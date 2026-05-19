@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
+from typing import Optional
 from ..core.context import AttentionContext
 
 class AttentionBackend(nn.Module, ABC):
@@ -12,14 +13,24 @@ class AttentionBackend(nn.Module, ABC):
         self.dim = dim
 
     @abstractmethod
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
-        Computes attention.
+        Industrial-grade Attention Kernel Interface.
 
         Args:
-            q: Query tensor (B, H, N, D) or (B, N, C)
-            k: Key tensor
-            v: Value tensor
-            context: AttentionContext containing metadata
+            q: Query tensor (B, H, N, D)
+            k: Key tensor (B, H, N, D)
+            v: Value tensor (B, H, N, D)
+            context: Metadata governing the execution
+            block_size: Tiling/blocking parameter for GPU execution
+            mask: Optional attention mask
         """
         pass

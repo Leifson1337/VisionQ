@@ -15,7 +15,7 @@ class TestVisionQIndustrial(unittest.TestCase):
     def test_image_flow(self):
         x = torch.randn(1, 100, self.dim)
         st_x = SpatioTemporalTensor(x, modality="image", spatial_shape=(10, 10))
-        ctx = AttentionContext(modality="image", spatial_shape=(10, 10), spatial_window=(3, 3))
+        ctx = AttentionContext(modality="image", spatial_shape=(10, 10), spatial_window=(3, 3), sequence_length=2048)
 
         output = self.model(st_x, ctx)
         self.assertIsInstance(output, SpatioTemporalTensor)
@@ -26,7 +26,7 @@ class TestVisionQIndustrial(unittest.TestCase):
         N = T * H * W
         x = torch.randn(1, T, H, W, self.dim)
         st_x = SpatioTemporalTensor(x, modality="video")
-        ctx = AttentionContext.from_st_tensor(st_x, attention_mode="spatio_temporal", spatial_window=(3, 3), temporal_window=3)
+        ctx = AttentionContext.from_st_tensor(st_x, attention_mode="spatio_temporal", spatial_window=(3, 3), temporal_window=3, sequence_length=2048)
 
         output = self.model(st_x, ctx)
         self.assertIsInstance(output, SpatioTemporalTensor)
@@ -42,17 +42,17 @@ class TestVisionQIndustrial(unittest.TestCase):
     def test_dispatcher_routing_rules(self):
         dispatcher = AttentionDispatcher()
 
-        # Rule: image -> neighborhood default
-        ctx_img = AttentionContext(modality="image")
+        # Rule: large image -> neighborhood default
+        ctx_img = AttentionContext(modality="image", sequence_length=2048)
         self.assertEqual(dispatcher.select(ctx_img), "neighborhood")
 
         # Rule: video -> spatio_temporal hybrid default
-        ctx_vid = AttentionContext(modality="video", attention_mode="spatio_temporal")
+        ctx_vid = AttentionContext(modality="video", attention_mode="spatio_temporal", sequence_length=2048)
         self.assertEqual(dispatcher.select(ctx_vid), "spatiotemporal_hybrid")
 
-        # Rule: sequence -> sparse
-        ctx_seq = AttentionContext(modality="sequence")
-        self.assertEqual(dispatcher.select(ctx_seq), "sparse")
+        # Rule: massive sequence -> streaming
+        ctx_seq = AttentionContext(modality="sequence", sequence_length=5000)
+        self.assertEqual(dispatcher.select(ctx_seq), "chunked_streaming")
 
 if __name__ == '__main__':
     unittest.main()

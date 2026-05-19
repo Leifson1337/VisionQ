@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 from .base import AttentionBackend
 from .registry import register_attention
 from ..core.context import AttentionContext
@@ -15,10 +16,20 @@ class FlashAttention(AttentionBackend):
         self.num_heads = num_heads
         self.attn_drop_p = attn_drop
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, context: AttentionContext) -> torch.Tensor:
-        # SDPA expects (B, H, N, D)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # SDPA handles block-based execution and tiling internally on modern GPUs.
+        # This acts as our 'fused_attention' backend.
         return F.scaled_dot_product_attention(
             q, k, v,
+            attn_mask=mask,
             dropout_p=self.attn_drop_p if self.training else 0.0,
             is_causal=False
         )
