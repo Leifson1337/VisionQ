@@ -1,28 +1,33 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Union
-
-from ..attention.registry import get_attention_backend
-from ..runtime.dispatcher import AttentionDispatcher
+from typing import Optional, Union, Dict
+from ..core.tensor import SpatioTemporalTensor, as_st_tensor
 from ..core.context import AttentionContext
-from ..core.tensor import STTensor, as_st_tensor
+from ..runtime.dispatcher import AttentionDispatcher
+from ..attention.registry import get_attention_backend
 
 class VisionBackboneBlock(nn.Module):
     """
-    Industrial-grade Vision/Video Transformer Block with dynamic attention routing.
+    Industrial-grade Vision/Video Transformer Block.
+    Shares weights across backends and lazily initializes compute ops.
     """
+
+    # Shared instance pool for compute-only backends to save memory across blocks
+    # if they don't hold parameters.
+    _backend_pool: Dict[str, nn.Module] = {}
+
     def __init__(self, dim: int, num_heads: int = 8, mlp_ratio: float = 4.0, qkv_bias: bool = True):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
 
-        # We store backends in a ModuleDict.
-        # For industrial-grade production, we only instantiate what we might need.
-        self.backends = nn.ModuleDict()
         self.dim = dim
         self.num_heads = num_heads
-        self.qkv_bias = qkv_bias
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
 
         self.dispatcher = AttentionDispatcher()
+
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(0.0)
 
         self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -32,51 +37,60 @@ class VisionBackboneBlock(nn.Module):
             nn.Linear(mlp_hidden_dim, dim)
         )
 
+        # Local backend cache for this block (only contains used ones)
+        self.backends = nn.ModuleDict()
+
     def _get_backend(self, name: str) -> nn.Module:
-        """Lazily instantiates backends to save memory."""
+        """Lazily instantiates the backend."""
         if name not in self.backends:
-            backend_cls = get_attention_backend(name)
-            backend = backend_cls(self.dim, num_heads=self.num_heads, qkv_bias=self.qkv_bias)
+            cls = get_attention_backend(name)
+            # Backend is compute-only, no parameters needed
+            self.backends[name] = cls(self.dim, num_heads=self.num_heads)
 
-            # Ensure the new backend is on the correct device and dtype
-            # We use a parameter from this module as a reference.
-            reference_param = next(self.parameters(), None)
-            if reference_param is not None:
-                backend.to(device=reference_param.device, dtype=reference_param.dtype)
+            # Ensure correct device/dtype
+            ref = next(self.parameters())
+            self.backends[name].to(device=ref.device, dtype=ref.dtype)
 
-            self.backends[name] = backend
         return self.backends[name]
 
-    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> torch.Tensor:
-        """
-        Forward pass with dynamic routing.
-
-        Args:
-            x: Input tensor or STTensor.
-            context: Optional AttentionContext. If missing, it's derived from STTensor.
-        """
+    def forward(self, x: Union[torch.Tensor, SpatioTemporalTensor], context: Optional[AttentionContext] = None) -> SpatioTemporalTensor:
         st_x = as_st_tensor(x)
         if context is None:
             context = AttentionContext.from_st_tensor(st_x)
 
-        residual = st_x.unwrap()
-        x = self.norm1(residual)
+        residual = st_x.flatten_all()
+        x_norm = self.norm1(residual)
 
-        # Dispatch
+        B, N_total, C = x_norm.shape
+        qkv = self.qkv(x_norm).reshape(B, N_total, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Dispatch to optimal backend
         backend_name = self.dispatcher.select(context)
         backend = self._get_backend(backend_name)
 
-        x = backend(x, context)
-        x = residual + x
+        out = backend(q, k, v, context)
 
-        # MLP
-        x = x + self.mlp(self.norm2(x))
-        return x
+        # Standardize output
+        if out.dim() == 5: # (B, T, H, N, D)
+            out = out.transpose(2, 3).reshape(B, N_total, C)
+        elif out.dim() == 4: # (B, H, N, D)
+            out = out.transpose(1, 2).reshape(B, N_total, C)
+
+        out = self.proj(out)
+        out = self.proj_drop(out)
+
+        hidden_states = residual + out
+        hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
+
+        return SpatioTemporalTensor(
+            hidden_states,
+            st_x.modality,
+            st_x.spatial_shape,
+            st_x.temporal_dim
+        )
 
 class VisionBackbone(nn.Module):
-    """
-    A unified Vision/Video Transformer Backbone.
-    """
     def __init__(self, depth: int, dim: int, num_heads: int = 8, mlp_ratio: float = 4.0):
         super().__init__()
         self.blocks = nn.ModuleList([
@@ -84,7 +98,8 @@ class VisionBackbone(nn.Module):
             for _ in range(depth)
         ])
 
-    def forward(self, x: Union[torch.Tensor, STTensor], context: Optional[AttentionContext] = None) -> torch.Tensor:
+    def forward(self, x: Union[torch.Tensor, SpatioTemporalTensor], context: Optional[AttentionContext] = None) -> SpatioTemporalTensor:
+        st_x = as_st_tensor(x)
         for block in self.blocks:
-            x = block(x, context)
-        return x
+            st_x = block(st_x, context)
+        return st_x

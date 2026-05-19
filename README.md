@@ -1,46 +1,53 @@
-# VisionQ: Spatio-Temporal Attention Runtime
+# VisionQ: High-Performance Attention Compute Engine
 
-VisionQ is a modular, high-performance runtime for Vision and Video Transformers. It provides a unified interface for different attention backends and dynamically selects the best implementation based on the execution context.
+VisionQ is a low-level attention compute engine designed as a hardware-aware replacement for standard PyTorch attention. It treats attention not as a layer, but as a **memory access problem**, optimizing for IO-bandwidth and locality.
 
-## Core Features
+## Key Architectural Principles
 
-- **Unified Representation**: `STTensor` handles both image and video data seamlessly.
-- **Dynamic Routing**: `AttentionDispatcher` selects optimal kernels (e.g., Flash Attention, Neighborhood Attention) at runtime.
-- **Pluggable Architecture**: Easily register new attention backends.
-- **Industrial-Grade Implementation**: Built with performance and scalability in mind.
+- **Memory-Limited Optimization**: Optimized for GPU memory hierarchy (HBM/SRAM), minimizing global memory bandwidth via tiling and block-based streaming.
+- **Online Softmax Integration**: Implements the FlashAttention principle of streaming normalization for numerically stable, constant-memory attention computation.
+- **Geometric 3D Awareness**: Native support for video and image data without forced flattening, preserving spatial and temporal locality.
+- **IO-Aware Kernel Abstraction**: A unified execution layer for CUDA, Triton, and CPU-fallback kernels.
+- **Efficient Sliding Windows**: Neighborhood attention implemented via `unfold` to maintain constant memory overhead regardless of spatial resolution.
+- **Policy-Driven Execution Planning**: Uses a learned `KernelRouter` and `PolicyModel` to dynamically decide the best attention algorithm, block structure, and sparsity strategy in real-time.
+- **Hardware-Aware Autotuning**: Automatically tunes parameters like `block_size` and `window_size` based on GPU compute capability and VRAM pressure.
+- **Graph-Based Attention Compilation**: Analyzes and optimizes complete attention workflows using an Intermediate Representation (IR).
+- **Kernel Fusion Engine**: Automatically fuses multiple attention operations (QKV + Softmax + MatMul) into optimized GPU-native execution pipelines.
+- **Operator Reordering & Redundancy Elimination**: Optimizes graph nodes to minimize redundant computation and maximize memory reuse.
+- **Intelligent Dispatching**: Dynamically routes execution to optimal kernels (Flash, Neighborhood, Block-Sparse, Streaming) based on input modality and sequence complexity.
 
-## Installation
+## Core Components
 
-```bash
-pip install .
-```
+- `visionq.core`: Unified `SpatioTemporalTensor` and metadata-rich `AttentionContext`.
+- `visionq.attention`: Industrial compute backends including factorized Spatio-Temporal Hybrid Attention.
+- `visionq.runtime`: High-level Kernel Dispatcher for adaptive routing.
+- `visionq.kernels`: Low-level Abstraction Layer for hardware-specific implementations (CPU/CUDA/Triton).
 
-## Quick Start
+## Advanced Routing Rules
+
+- **Small Sequences (< 1024 tokens)**: Routes to Fused IO-aware kernels (FlashAttention).
+- **Long Videos (> 16 frames)**: Routes to Block-Sparse Temporal attention to avoid T² complexity.
+- **High-Resolution Images**: Routes to Spatial Neighborhood (local window) kernels.
+- **Massive Sequences (> 4096 tokens)**: Routes to Chunked Streaming execution.
+
+## Getting Started
 
 ```python
 import torch
-from visionq.core import STTensor, AttentionContext
+from visionq.core import SpatioTemporalTensor
 from visionq.models import VisionBackbone
 
-# Initialize model
-model = VisionBackbone(depth=6, dim=256, num_heads=8)
+# Native 3D Video Input: (B, T, H, W, C)
+x = torch.randn(1, 8, 16, 16, 128)
+st_x = SpatioTemporalTensor(x, modality="video")
 
-# Prepare data
-x = torch.randn(1, 196, 256)
-st_x = STTensor(x, modality="image", spatial_shape=(14, 14))
-
-# Global Attention
-ctx_global = AttentionContext(modality="image")
-output = model(st_x, ctx_global)
-
-# Local (Neighborhood) Attention
-ctx_local = AttentionContext(modality="image", spatial_shape=(14, 14), window_size=7)
-output = model(st_x, ctx_local)
+# Industrial-grade Backbone
+model = VisionBackbone(depth=6, dim=128, num_heads=8)
+output = model(st_x) # Automatically dispatches to optimal Spatio-Temporal kernels
 ```
 
-## Architecture
+## Performance Targets
 
-- `core/`: Fundamental data types and context management.
-- `attention/`: Backend implementations (Flash, Neighborhood, etc.).
-- `runtime/`: Execution logic and backend selection.
-- `models/`: High-level Transformer components.
+- Reduce complexity from $O(N^2)$ to $O(N \cdot k)$ via locality-aware kernels.
+- Support video-scale processing ($T \times H \times W$) through factorized execution.
+- Maintain a constant memory footprint for massive sequences via chunked streaming.

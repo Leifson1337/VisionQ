@@ -4,95 +4,62 @@ import torch.nn.functional as F
 from .base import AttentionBackend
 from .registry import register_attention
 from ..core.context import AttentionContext
-from typing import Optional, Tuple
+from typing import Optional
 
 @register_attention("neighborhood")
 class NeighborhoodAttention(AttentionBackend):
     """
-    Neighborhood Attention (NA) implementation.
-    Restricts attention to a local neighborhood around each token.
-    This version includes better support for 2D spatial structures.
+    Spatio-Temporal Neighborhood Attention (Optimized).
+    Treats 3D volumes as sliding windows to avoid O(N^2) memory footprint.
     """
     def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__(dim)
-        if dim % num_heads != 0:
-            raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads})")
-
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self._mask_cache = {}
 
-    def _get_2d_neighborhood_mask(self, H: int, W: int, window_size: int, device: torch.device):
-        """
-        Generates a 2D neighborhood mask efficiently with caching.
-        """
-        cache_key = (H, W, window_size, device)
-        if cache_key in self._mask_cache:
-            return self._mask_cache[cache_key]
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        context: AttentionContext,
+        block_size: int = 32,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        B, H_heads, N, D = q.shape
 
-        N = H * W
-        mask = torch.full((N, N), float('-inf'), device=device)
+        # Spatial/Temporal shape inference
+        T = context.temporal_dim or 1
+        H_s, W_s = context.spatial_shape if context.spatial_shape else (int((N/T)**0.5), int((N/T)**0.5))
+        window = context.window_size if context.window_size > 0 else 7
 
-        # Grid coordinates
-        coords_h = torch.arange(H, device=device)
-        coords_w = torch.arange(W, device=device)
-        grid_h, grid_w = torch.meshgrid(coords_h, coords_w, indexing='ij')
-        grid = torch.stack([grid_h, grid_w], dim=-1).reshape(N, 2) # (N, 2)
+        if T * H_s * W_s != N:
+            # Fallback to global if shape is unknown
+            attn = (q * self.scale) @ k.transpose(-2, -1)
+            if mask is not None: attn += mask
+            return (attn.softmax(dim=-1) @ v)
 
-        # Distance calculation
-        dist = torch.abs(grid.unsqueeze(1) - grid.unsqueeze(0)) # (N, N, 2)
-        in_window = (dist[:, :, 0] <= window_size // 2) & (dist[:, :, 1] <= window_size // 2)
+        # 3D Neighborhood (Simplified as Spatial windows per frame for baseline efficiency)
+        # In a full spatio-temporal kernel, we would unfold T as well.
+        # Here we reuse the optimized spatial logic across frames.
+        q = q.reshape(B, H_heads, T, H_s, W_s, D).permute(0, 2, 1, 3, 4, 5).reshape(B * T, H_heads, H_s, W_s, D)
+        k = k.reshape(B, H_heads, T, H_s, W_s, D).permute(0, 2, 1, 3, 4, 5).reshape(B * T, H_heads, H_s, W_s, D)
+        v = v.reshape(B, H_heads, T, H_s, W_s, D).permute(0, 2, 1, 3, 4, 5).reshape(B * T, H_heads, H_s, W_s, D)
 
-        mask[in_window] = 0
-        self._mask_cache[cache_key] = mask
-        return mask
+        pad = window // 2
+        k_v_view = k.permute(0, 1, 4, 2, 3) # (B*T, H, D, H, W)
+        v_v_view = v.permute(0, 1, 4, 2, 3)
 
-    def forward(self, x, context: AttentionContext):
-        """
-        Forward pass for Neighborhood Attention.
+        k_windows = F.pad(k_v_view, (pad, pad, pad, pad)).unfold(3, window, 1).unfold(4, window, 1).reshape(B*T, H_heads, D, H_s, W_s, -1)
+        v_windows = F.pad(v_v_view, (pad, pad, pad, pad)).unfold(3, window, 1).unfold(4, window, 1).reshape(B*T, H_heads, D, H_s, W_s, -1)
 
-        Args:
-            x (torch.Tensor): Input tensor (B, N, C).
-            context (AttentionContext): Context containing spatial_shape and window_size.
-        """
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
-
-        if context.window_size > 0:
-            if context.spatial_shape:
-                H, W = context.spatial_shape
-                if H * W == N:
-                    mask = self._get_2d_neighborhood_mask(H, W, context.window_size, x.device)
-                    attn = attn + mask
-                else:
-                    # Fallback to 1D if shape doesn't match
-                    mask = self._get_1d_neighborhood_mask(N, context.window_size, x.device)
-                    attn = attn + mask
-            else:
-                mask = self._get_1d_neighborhood_mask(N, context.window_size, x.device)
-                attn = attn + mask
-
+        # Q: (B*T, H, H, W, D), K_win: (B*T, H, D, H, W, K)
+        attn = torch.einsum('bhxwd,bhdxwk->bhxwk', q * self.scale, k_windows)
         attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        out = torch.einsum('bhxwk,bhdxwk->bhxwd', attn, v_windows)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-    def _get_1d_neighborhood_mask(self, N: int, window_size: int, device: torch.device):
-        indices = torch.arange(N, device=device)
-        dist = torch.abs(indices.unsqueeze(1) - indices.unsqueeze(0))
-        mask = torch.full((N, N), float('-inf'), device=device)
-        mask[dist <= window_size // 2] = 0
-        return mask
+        # Restore to (B, H_heads, N, D)
+        out = out.reshape(B, T, H_heads, H_s, W_s, D).permute(0, 2, 1, 3, 4, 5).reshape(B, H_heads, N, D)
+        return out
