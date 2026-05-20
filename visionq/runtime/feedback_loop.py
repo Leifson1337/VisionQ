@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -26,3 +28,16 @@ class FeedbackLoop:
         for record in self.records:
             totals.setdefault(record.backend, []).append(record.latency_ms)
         return {backend: sum(values) / len(values) for backend, values in totals.items()}
+
+    def export_json(self, path: str | Path) -> None:
+        """Serializes all recorded telemetry to a JSON file."""
+        data = [asdict(r) for r in self.records]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def import_json(self, path: str | Path) -> None:
+        """Loads telemetry records from a JSON file."""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for item in data:
+            self.records.append(FeedbackRecord(**item))

@@ -21,9 +21,9 @@ def test_graph_rejects_missing_input():
 
 def test_optimizer_removes_duplicate_projection_and_rewires():
     graph = AttentionGraph()
-    graph.add_node(QKVProjectionNode(id="qkv1", dim=64))
-    graph.add_node(QKVProjectionNode(id="qkv2", dim=64))
-    graph.add_node(MatMulNode(id="scores", inputs=["qkv2"]))
+    graph.add_node(QKVProjectionNode(id="qkv1", dim=64, outputs=["t1"]))
+    graph.add_node(QKVProjectionNode(id="qkv2", dim=64, outputs=["t2"]))
+    graph.add_node(MatMulNode(id="scores", inputs=["qkv2"], outputs=["t3"]))
     optimized = GraphOptimizer(graph).optimize()
     assert "qkv2" not in optimized.nodes
     assert optimized.nodes["scores"].inputs == ["qkv1"]

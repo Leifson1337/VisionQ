@@ -96,8 +96,7 @@ class TritonAttentionKernel:
         del block_size
         if mask is not None:
             raise ValueError("TritonAttentionKernel does not support masks")
-        if getattr(context, "causal", False):
-            raise ValueError("TritonAttentionKernel does not support causal attention")
+        is_causal = getattr(context, "causal", False)
         if not triton_available():
             raise RuntimeError("Triton is not installed; install visionq[triton] on Linux CUDA")
         if not q.is_cuda:
@@ -131,6 +130,7 @@ class TritonAttentionKernel:
             q.stride(3),
             heads,
             scale,
+            IS_CAUSAL=is_causal,
             BLOCK_M=self.limits.block_m,
             BLOCK_N=self.limits.block_n,
             BLOCK_D=head_dim,
@@ -156,6 +156,7 @@ if triton_available():
         stride_d: tl.constexpr,
         heads: tl.constexpr,
         scale: tl.constexpr,
+        IS_CAUSAL: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_D: tl.constexpr,
@@ -187,6 +188,8 @@ if triton_available():
             )
             scores = tl.dot(q, tl.trans(k)) * scale
             scores = tl.where(cols[None, :] < tokens, scores, -float("inf"))
+            if IS_CAUSAL:
+                scores = tl.where(offs_m[:, None] >= cols[None, :], scores, -float("inf"))
             m_new = tl.maximum(m_i, tl.max(scores, axis=1))
             p = tl.exp(scores - m_new[:, None])
             alpha = tl.exp(m_i - m_new)

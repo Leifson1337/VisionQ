@@ -32,7 +32,7 @@ class AttentionDispatcher:
         graph.add_node(
             MatMulNode(id="scores", inputs=["qkv"], outputs=["softmax"], transpose_b=True)
         )
-        graph.add_node(SoftmaxNode(id="softmax", inputs=["scores"], outputs=[]))
+        graph.add_node(SoftmaxNode(id="softmax", inputs=["scores"], outputs=["final"]))
         graph = GraphOptimizer(graph).optimize()
         return FusionEngine(graph).fuse()
 
